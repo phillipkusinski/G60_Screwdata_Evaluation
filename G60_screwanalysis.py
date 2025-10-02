@@ -4,10 +4,12 @@ GUI tool for analyzing and exporting screw assembly data for BMW G60 production 
 """
 
 import tkinter as tk
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk
+from tkinter import filedialog, messagebox
 import pandas as pd
 import matplotlib.pyplot as plt
 import os
+from io import BytesIO
 
 class ScrewAnalysisApp:
     def __init__(self, root):
@@ -174,20 +176,133 @@ class ScrewAnalysisApp:
         fig = ax.figure
         return fig
     
+    def create_detailed_dataframe(self):
+        #.groupby:group filtered dataframe into "Datum", "Roboternummer", "Fehlernummer"
+        #.size(): counts number of entrys i nevery group
+        #.unstack(): "Fehlernummer" will be changed to the different failure nums as a own col
+        df_grouped_detailed = self.df.groupby([self.df["Datum"].dt.date, "Roboternummer", "Status"]).size().unstack(fill_value=0)
+        #sum num of all entrys of axis 1
+        df_grouped_detailed["Gesamtverschraubungen"] = df_grouped_detailed.sum(axis=1)
+        #get all the cols with failures except 0 and "Gesamtverschraubungen"
+        fail_cols = [col for col in df_grouped_detailed.columns if col not in [0, "Gesamtverschraubungen"]]
+        #Calculate "Fehler in %"
+        df_grouped_detailed["Fehler in %"] = (df_grouped_detailed[fail_cols].sum(axis=1) / df_grouped_detailed["Gesamtverschraubungen"] * 100).round(2)
+        return df_grouped_detailed
+    
+    def create_detailed_dataframe_weekly(self):
+        #.groupby:group filtered dataframe into "Roboternummer", "Fehlernummer"
+        #.size(): counts number of entrys i nevery group
+        #.unstack(): "Fehlernummer" will be changed to the different failure nums as a own col
+        df_grouped_detailed_weekly = self.df.groupby(["Roboternummer", "Status"]).size().unstack(fill_value=0)
+        #sum num of all entrys of axis 1
+        df_grouped_detailed_weekly["Gesamtverschraubungen"] = df_grouped_detailed_weekly.sum(axis=1)
+        #get all the cols with failures except 0 and "Gesamtverschraubungen"
+        fail_cols = [col for col in df_grouped_detailed_weekly.columns if col not in [0, "Gesamtverschraubungen"]]
+        #Calculate "Fehler in %"
+        df_grouped_detailed_weekly["Fehler in %"] = (df_grouped_detailed_weekly[fail_cols].sum(axis=1) / df_grouped_detailed_weekly["Gesamtverschraubungen"] * 100).round(2)
+        return df_grouped_detailed_weekly
+    
+    def excel_export(self, fig, df_daily, df_weekly):
+        #select save name for the file with correct path settings
+        save_name = f"{self.save_path}/Schraubreport_{self.variant}_KW{self.calendarweek}_{self.year}.xlsx"
+        
+        with pd.ExcelWriter(save_name) as writer:
+            df_daily.to_excel(writer, sheet_name = "G60 daily")
+            df_weekly.to_excel(writer, sheet_name = "G60 weekly")
+
+            #format seetings for failure percent coloring
+            workbook = writer.book
+            green_format = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100'})
+            red_format = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006'})
+            yellow_format = workbook.add_format({'bg_color': '#FFEB9C', 'font_color': '#9C6500'})
+            
+            worksheet = writer.sheets["G60 weekly"]  
+            try:
+                #code snippet created with AI
+                col_index = df_weekly.columns.get_loc("Fehler in %")  
+                excel_col_letter = chr(ord('A') + col_index + 1)   
+                cell_range = f"{excel_col_letter}2:{excel_col_letter}3"
+                worksheet.conditional_format(cell_range, {
+                    'type': 'cell',
+                    'criteria': '>=',
+                    'value': 0.5,
+                    'format': red_format
+                })
+                worksheet.conditional_format(cell_range, {
+                    'type': 'cell',
+                    'criteria': 'between',
+                    'minimum': 0.2001,
+                    'maximum': 0.4999,
+                    'format': yellow_format
+                })
+                worksheet.conditional_format(cell_range, {
+                    'type': 'cell',
+                    'criteria': '<=',
+                    'value': 0.2,
+                    'format': green_format
+                })
+            except KeyError:
+                print(f"Spalte 'Fehler in %' nicht gefunden weekly.")
+                
+            worksheet = writer.sheets["G60 daily"]
+            try:
+                #code snippet created with AI
+                col_index = df_daily.columns.get_loc("Fehler in %")  
+                excel_col_letter = chr(ord('A') + col_index + 2)   
+                row_start = 2
+                row_end = len(df_daily) + 1
+                cell_range = f"{excel_col_letter}{row_start}:{excel_col_letter}{row_end}"
+                worksheet.conditional_format(cell_range, {
+                    'type': 'cell',
+                    'criteria': '>=',
+                    'value': 0.5,
+                    'format': red_format
+                })
+                worksheet.conditional_format(cell_range, {
+                    'type': 'cell',
+                    'criteria': 'between',
+                    'minimum': 0.2001,
+                    'maximum': 0.4999,
+                    'format': yellow_format
+                })
+                worksheet.conditional_format(cell_range, {
+                    'type': 'cell',
+                    'criteria': '<=',
+                    'value': 0.2,
+                    'format': green_format
+                })
+            except KeyError:
+                print(f"Spalte 'Fehler in %' nicht gefunden daily.")   
+
+            #BytesIO that the image is buffered in the RAM rather than saved on the desktop
+            image_stream = BytesIO()
+            fig.savefig(image_stream, format='png', dpi=300, bbox_inches='tight')
+            #reset RAM buffer
+            image_stream.seek(0)
+
+            #insert fig into selected worksheet
+            worksheet = writer.sheets["G60 weekly"]
+            worksheet.insert_image("A7", "", {
+                "image_data": image_stream,
+                "x_offset": 5,
+                "y_offset": 5,
+                "x_scale": 0.5,
+                "y_scale": 0.5
+            })  
+                
     def main_filter_func(self):
         fig = self.create_failure_plot()
-        fig.show()
-        # df_grouped_detailed = create_detailed_dataframe()
-        # df_grouped_detailed_weekly = create_detailed_dataframe_weekly()
-        return
+        df_grouped_detailed = self.create_detailed_dataframe()
+        df_grouped_detailed_weekly = self.create_detailed_dataframe_weekly()
+        return fig, df_grouped_detailed, df_grouped_detailed_weekly
     
     def export_data(self):
         if self.df.empty or not self.save_path:
             messagebox.showerror("Export nicht möglich", "Bitte zuerst Daten laden und Speicherpfad wählen.")
             return
-        self.main_filter_func()
-        # Hier kommt deine Exportlogik
-        print(f"Exportiere Daten für KW{self.calendarweek} nach: {self.save_path}")
+        fig, df_grouped_detailed, df_grouped_detailed_weekly = self.main_filter_func()
+        self.excel_export(fig, df_grouped_detailed, df_grouped_detailed_weekly)
+        messagebox.showinfo("Export erfolgreich", "Der Export wurde erfolgreich durchgeführt.")
 
 
 if __name__ == "__main__":
